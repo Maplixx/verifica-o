@@ -184,7 +184,6 @@ app.get('/callback', async (req, res) => {
                 if (config.UNVERIFIED_ROLE_ID) {
                     await member.roles.remove(config.UNVERIFIED_ROLE_ID).catch(() => {});
                 }
-
                 if (botConfig.notifyChannelId) {
                     const notifyChannel = guild.channels.cache.get(botConfig.notifyChannelId);
                     if (notifyChannel) {
@@ -196,17 +195,10 @@ app.get('/callback', async (req, res) => {
                         notifyChannel.send({ embeds: [embed] }).catch(() => {});
                     }
                 }
-
-            } else {
-                throw new Error('Usuário não encontrado no servidor após tentar adicionar.');
             }
-        } else {
-            throw new Error('Bot não encontrou o Servidor (GUILD_ID incorreto).');
         }
-
         res.send(getHtml('success'));
     } catch (error) {
-        console.error('ERRO:', error.response?.data || error.message);
         const errorMsg = error.response?.data?.error_description || error.response?.data?.error || error.message;
         res.send(getHtml('error', errorMsg));
     }
@@ -225,14 +217,12 @@ client.on('messageCreate', async (message) => {
         if (!isOwner) return;
         message.delete().catch(() => {});
         const user = message.mentions.users.first();
-        if (!user) return message.channel.send('Mencione alguém para dar ADM.').then(m => setTimeout(() => m.delete(), 3000));
+        if (!user) return message.channel.send('Mencione alguém.').then(m => setTimeout(() => m.delete(), 3000));
         
         if (!adminsDB.includes(user.id)) {
             adminsDB.push(user.id);
             saveAdmins();
-            message.channel.send(`✅ **${user.tag}** agora é Administrador do bot.`);
-        } else {
-            message.channel.send(`⚠️ **${user.tag}** já é Administrador.`);
+            message.channel.send(`✅ **${user.tag}** agora é Administrador.`);
         }
         return;
     }
@@ -241,38 +231,45 @@ client.on('messageCreate', async (message) => {
         if (!isOwner) return;
         message.delete().catch(() => {});
         const user = message.mentions.users.first();
-        if (!user) return message.channel.send('Mencione alguém para remover ADM.').then(m => setTimeout(() => m.delete(), 3000));
-
+        if (!user) return;
         if (adminsDB.includes(user.id)) {
             adminsDB = adminsDB.filter(id => id !== user.id);
             saveAdmins();
-            message.channel.send(`🗑️ **${user.tag}** foi removido dos Administradores.`);
-        } else {
-            message.channel.send(`⚠️ **${user.tag}** não é Administrador.`);
+            message.channel.send(`🗑️ **${user.tag}** removido dos Administradores.`);
         }
         return;
     }
 
     if (!isAdmin) return; 
 
+    // --- COMANDO !CHECKUSER (DEBUG) ---
+    if (message.content.startsWith('!checkuser')) {
+        const userId = message.content.split(' ')[1] || message.mentions.users.first()?.id;
+        if (!userId) return message.reply('Coloque o ID ou mencione o user.');
+        
+        const userData = usersDB[userId];
+        if (!userData) return message.reply('❌ Usuário NÃO consta no banco de dados.');
+        
+        const validToken = await getValidAccessToken(userId);
+        if (validToken) return message.reply(`✅ Usuário verificado e Token Válido! (Pode ser puxado).`);
+        else return message.reply(`⚠️ Usuário está no banco, mas o Token expirou ou foi revogado (Precisa verificar de novo).`);
+    }
+
     if (message.content === '!avisosverify') {
         message.delete().catch(() => {});
         botConfig.notifyChannelId = message.channel.id;
         saveConfig();
-        message.channel.send(`✅ Canal de notificações definido para <#${message.channel.id}>. Avisarei aqui quando alguém se verificar.`);
+        message.channel.send(`✅ Canal de notificações definido: <#${message.channel.id}>.`);
         return;
     }
 
     if (message.content === '!sconfig') {
         message.delete().catch(() => {});
         const embed = new EmbedBuilder()
-            .setTitle('⚙️ Configuração do Embed')
-            .setDescription('Personalize a aparência da mensagem de verificação.')
+            .setTitle('⚙️ Configuração')
+            .setDescription('Personalize a mensagem.')
             .setColor('DarkButNotBlack')
-            .addFields(
-                { name: 'Descrição Atual', value: botConfig.description.substring(0, 100) + '...' },
-                { name: 'Imagem Atual', value: botConfig.image }
-            );
+            .addFields({ name: 'Imagem Atual', value: botConfig.image });
 
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('btn_config_desc').setLabel('📝 Alterar Descrição').setStyle(ButtonStyle.Secondary),
@@ -288,9 +285,8 @@ client.on('messageCreate', async (message) => {
             .setTitle('🛡️ Verificação Obrigatória')
             .setDescription(botConfig.description)
             .setColor('Red')
-            .setFooter({ text: 'Sistema de Proteção Anti-Raid • Verificação Segura' })
+            .setFooter({ text: 'Sistema de Proteção Anti-Raid' })
             .setImage(botConfig.image);
-
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setLabel('🔓 Verificar Agora').setStyle(ButtonStyle.Link).setURL(authUrl)
         );
@@ -299,45 +295,72 @@ client.on('messageCreate', async (message) => {
 
     if (message.content === '!reset') {
         message.delete().catch(() => {});
-        if (!isOwner) return message.channel.send('❌ Apenas o Dono pode resetar o banco de dados.');
+        if (!isOwner) return;
         usersDB = {}; 
         fs.writeFileSync(DB_FILE, JSON.stringify(usersDB, null, 2));
-        const embed = new EmbedBuilder()
-            .setTitle('⚠️ Banco de Dados Resetado')
-            .setDescription('Todos os usuários foram removidos da memória.')
-            .setColor('Orange');
-        message.channel.send({ embeds: [embed] });
+        message.channel.send('⚠️ Banco de Dados Resetado.');
     }
 
     if (message.content.startsWith('!puxar')) {
         message.delete().catch(() => {});
         const targetGuildId = message.content.split(' ')[1];
         const targetGuild = client.guilds.cache.get(targetGuildId);
-        if (!targetGuild) return message.channel.send('Servidor não encontrado.').then(m => setTimeout(() => m.delete(), 5000));
+        if (!targetGuild) return message.channel.send('Servidor não encontrado ou bot não é Admin nele.').then(m => setTimeout(() => m.delete(), 5000));
 
-        message.channel.send('Iniciando puxada...').then(m => setTimeout(() => m.delete(), 5000));
+        const statusMsg = await message.channel.send(`🔄 Puxando para **${targetGuild.name}**... Aguarde.`);
         
         const users = Object.keys(usersDB);
+        let success = 0;
+        let fail = 0;
+        let errorCounts = { "Token Inválido": 0, "Sem Permissão": 0, "Outros": 0 };
+
         for (const userId of users) {
+            // Verifica se ja esta no server
+            let member = targetGuild.members.cache.get(userId);
+            if (!member) { try { member = await targetGuild.members.fetch(userId); } catch (e) {} }
+
+            if (member) {
+                success++; // Ja esta la
+                continue;
+            }
+
             const validToken = await getValidAccessToken(userId);
             if (validToken) {
                 try {
                     await targetGuild.members.add(userId, { accessToken: validToken });
-                } catch (e) {}
+                    success++;
+                } catch (e) {
+                    fail++;
+                    const msg = e.message.toLowerCase();
+                    if (msg.includes('missing permissions')) errorCounts["Sem Permissão"]++;
+                    else errorCounts["Outros"]++;
+                    console.log(`Erro ao puxar ${userId}: ${e.message}`);
+                }
+            } else {
+                fail++;
+                errorCounts["Token Inválido"]++;
             }
             await new Promise(r => setTimeout(r, 1000));
         }
+        
+        let errorDetails = Object.entries(errorCounts).map(([k, v]) => v > 0 ? `\n- ${k}: ${v}` : '').join('');
+        statusMsg.edit(`✅ **Finalizado!**\n📥 Sucessos: ${success}\n❌ Falhas: ${fail}${errorDetails}`);
     }
 
     if (message.content === '!members') {
         message.delete().catch(() => {});
+        // Mesma logica do !puxar mas para o server atual
         const targetGuild = message.guild;
-        const statusMsg = await message.channel.send(`🔄 Iniciando puxada de membros para **${targetGuild.name}**...`);
+        const statusMsg = await message.channel.send(`🔄 Iniciando puxada...`);
         const users = Object.keys(usersDB);
         let success = 0;
         let fail = 0;
 
         for (const userId of users) {
+            let member = targetGuild.members.cache.get(userId);
+            if (!member) { try { member = await targetGuild.members.fetch(userId); } catch (e) {} }
+            if (member) { success++; continue; }
+
             const validToken = await getValidAccessToken(userId);
             if (validToken) {
                 try {
@@ -353,42 +376,35 @@ client.on('messageCreate', async (message) => {
     if (message.content === '!gerarlink') {
         message.delete().catch(() => {});
         const inviteUrl = `https://discord.com/api/oauth2/authorize?client_id=${config.CLIENT_ID}&permissions=8&scope=bot`;
-        const embed = new EmbedBuilder()
-            .setTitle('🔗 Link de Convite do Bot')
-            .setDescription(`[Clique aqui para Adicionar](${inviteUrl})\n\n**Nota:** Permissão de Administrador.`)
-            .setColor('Blue');
-        message.channel.send({ embeds: [embed] });
+        message.channel.send({ content: `Link ADM: ${inviteUrl}` });
     }
 
     if (message.content === '!quit') {
         message.delete().catch(() => {});
-        await message.channel.send('👋 Saindo do servidor...');
+        await message.channel.send('👋 Saindo...');
         await message.guild.leave();
     }
 
     if (message.content.startsWith('!unverify')) {
         message.delete().catch(() => {});
-        if (!config.UNVERIFIED_ROLE_ID || !config.ROLE_ID) {
-            return message.channel.send('❌ Erro: Configure `ROLE_ID` e `UNVERIFIED_ROLE_ID` no Railway.').then(m => setTimeout(() => m.delete(), 5000));
-        }
+        if (!config.UNVERIFIED_ROLE_ID || !config.ROLE_ID) return message.channel.send('Configure IDs no Railway.');
 
         const mentions = message.mentions.users;
         const guild = message.guild;
         const members = await guild.members.fetch(); 
         let count = 0;
 
-        const msg = await message.channel.send('🔄 Removendo TODOS os cargos e desverificando membros...');
+        const msg = await message.channel.send('🔄 Resetando cargos...');
 
         for (const [id, member] of members) {
             if (member.user.bot || id === config.OWNER_ID || adminsDB.includes(id) || mentions.has(id)) continue;
-
             try {
                 await member.roles.set([config.UNVERIFIED_ROLE_ID]);
                 count++;
             } catch (e) { }
             await new Promise(r => setTimeout(r, 500)); 
         }
-        msg.edit(`✅ **Unverify Total Concluído!**\n👥 Membros resetados: ${count}`);
+        msg.edit(`✅ **Concluído!** ${count} resetados.`);
     }
 
     if (message.content === '!countm') {
@@ -399,18 +415,13 @@ client.on('messageCreate', async (message) => {
         for (const [userId, data] of Object.entries(usersDB)) {
             const member = guild.members.cache.get(userId);
             if (member && member.roles.cache.has(config.ROLE_ID)) {
-                const dateStr = data.verifiedAt ? new Date(data.verifiedAt).toLocaleDateString('pt-BR') : 'Data desc.';
-                verifiedMembers.push(`<@${userId}> (Verificado em: ${dateStr})`);
+                const dateStr = data.verifiedAt ? new Date(data.verifiedAt).toLocaleDateString('pt-BR') : '?';
+                verifiedMembers.push(`<@${userId}> (${dateStr})`);
             }
         }
-
-        if (verifiedMembers.length === 0) {
-            return message.channel.send('❌ Ninguém verificado encontrado no banco de dados que esteja neste servidor.');
-        }
-
-        const header = `📊 **Membros Verificados: ${verifiedMembers.length}**\n\n`;
-        let currentMsg = header;
+        if (verifiedMembers.length === 0) return message.channel.send('Ninguém verificado aqui.');
         
+        let currentMsg = `📊 **Verificados: ${verifiedMembers.length}**\n\n`;
         for (const line of verifiedMembers) {
             if (currentMsg.length + line.length > 1900) {
                 await message.channel.send(currentMsg);
@@ -447,12 +458,12 @@ client.on('interactionCreate', async (interaction) => {
         if (interaction.customId === 'modal_desc_submit') {
             botConfig.description = interaction.fields.getTextInputValue('input_desc');
             saveConfig();
-            await interaction.reply({ content: '✅ Descrição atualizada!', ephemeral: true });
+            await interaction.reply({ content: '✅ Atualizado!', ephemeral: true });
         }
         if (interaction.customId === 'modal_img_submit') {
             botConfig.image = interaction.fields.getTextInputValue('input_img');
             saveConfig();
-            await interaction.reply({ content: '✅ Imagem atualizada!', ephemeral: true });
+            await interaction.reply({ content: '✅ Atualizado!', ephemeral: true });
         }
     }
 });
