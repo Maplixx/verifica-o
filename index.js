@@ -5,14 +5,14 @@ const fs = require('fs');
 const bodyParser = require('body-parser');
 
 const config = {
-    TOKEN: process.env.TOKEN || 'SEU_TOKEN_AQUI',
-    CLIENT_ID: process.env.CLIENT_ID || 'SEU_CLIENT_ID_AQUI',
-    CLIENT_SECRET: process.env.CLIENT_SECRET || 'SEU_CLIENT_SECRET_AQUI',
-    REDIRECT_URI: process.env.REDIRECT_URI || 'https://seusite.discloud.app/callback',
+    TOKEN: process.env.TOKEN,
+    CLIENT_ID: process.env.CLIENT_ID,
+    CLIENT_SECRET: process.env.CLIENT_SECRET,
+    REDIRECT_URI: process.env.REDIRECT_URI, 
     PORT: process.env.PORT || 8080,
-    GUILD_ID: process.env.GUILD_ID || 'ID_DO_SERVIDOR',
-    ROLE_ID: process.env.ROLE_ID || 'ID_DO_CARGO',
-    OWNER_ID: process.env.OWNER_ID || 'SEU_ID'
+    GUILD_ID: process.env.GUILD_ID,
+    ROLE_ID: process.env.ROLE_ID,
+    OWNER_ID: process.env.OWNER_ID
 };
 
 const DB_FILE = 'users.json';
@@ -28,10 +28,7 @@ function saveUser(userId, accessToken, refreshToken, expiresIn) {
 async function getValidAccessToken(userId) {
     const user = usersDB[userId];
     if (!user) return null;
-
-    if (Date.now() < user.expiresAt - 3600000) {
-        return user.accessToken;
-    }
+    if (Date.now() < user.expiresAt - 3600000) return user.accessToken;
 
     try {
         const response = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
@@ -44,9 +41,50 @@ async function getValidAccessToken(userId) {
         const { access_token, refresh_token, expires_in } = response.data;
         saveUser(userId, access_token, refresh_token, expires_in);
         return access_token;
-    } catch (error) {
-        return null;
-    }
+    } catch (error) { return null; }
+}
+
+function getHtml(type) {
+    const isSuccess = type === 'success';
+    const title = isSuccess ? 'VERIFICADO COM SUCESSO' : 'ERRO NA VERIFICAÇÃO';
+    const message = isSuccess ? 'Você recebeu o cargo! Já pode fechar essa janela e voltar para o Discord.' : 'Ocorreu um problema ao tentar te verificar. Tente novamente.';
+    const icon = isSuccess ? '✔' : '✖';
+    const color = isSuccess ? '#00ff00' : '#ff0000';
+    
+    return `
+    <!DOCTYPE html>
+    <html lang="pt-br">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${title}</title>
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Roboto:wght@300&display=swap');
+            body { margin: 0; padding: 0; background-color: #050505; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: 'Roboto', sans-serif; overflow: hidden; }
+            .container { position: relative; width: 350px; height: 450px; background: #111; border-radius: 20px; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 1; }
+            .container::before, .container::after { content: ''; position: absolute; top: -4px; left: -4px; right: -4px; bottom: -4px; background: linear-gradient(45deg, #ff0000, #ff0000, #330000, #ff0000); background-size: 400%; border-radius: 24px; z-index: -1; animation: glowing 20s linear infinite; }
+            .container::after { filter: blur(25px); }
+            @keyframes glowing { 0% { background-position: 0 0; } 50% { background-position: 400% 0; } 100% { background-position: 0 0; } }
+            .content { text-align: center; z-index: 2; padding: 20px; }
+            .icon { font-size: 80px; margin-bottom: 20px; color: ${color}; text-shadow: 0 0 20px ${color}; }
+            h1 { font-family: 'Orbitron', sans-serif; font-size: 24px; color: #ff0000; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 2px; }
+            p { color: #ccc; font-size: 16px; line-height: 1.5; margin-bottom: 30px; }
+            .btn { text-decoration: none; color: white; border: 2px solid #ff0000; padding: 10px 30px; border-radius: 5px; font-weight: bold; transition: 0.3s; text-transform: uppercase; letter-spacing: 1px; }
+            .btn:hover { background: #ff0000; box-shadow: 0 0 15px #ff0000; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="content">
+                <div class="icon">${icon}</div>
+                <h1>${title}</h1>
+                <p>${message}</p>
+                <a href="discord://" class="btn">Voltar ao Discord</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    `;
 }
 
 const client = new Client({
@@ -59,7 +97,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 app.get('/callback', async (req, res) => {
     const { code } = req.query;
-    if (!code) return res.send('Erro: Falta codigo.');
+    if (!code) return res.send(getHtml('error'));
 
     try {
         const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
@@ -72,10 +110,7 @@ app.get('/callback', async (req, res) => {
         }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 
         const { access_token, refresh_token, expires_in } = tokenResponse.data;
-
-        const userResponse = await axios.get('https://discord.com/api/users/@me', {
-            headers: { Authorization: `Bearer ${access_token}` }
-        });
+        const userResponse = await axios.get('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${access_token}` } });
         const userId = userResponse.data.id;
 
         saveUser(userId, access_token, refresh_token, expires_in);
@@ -87,9 +122,10 @@ app.get('/callback', async (req, res) => {
             if (member) await member.roles.add(config.ROLE_ID);
         }
 
-        res.send('<h1>Verificado com sucesso.</h1>');
+        res.send(getHtml('success'));
     } catch (error) {
-        res.send('Erro na verificacao.');
+        console.error(error);
+        res.send(getHtml('error'));
     }
 });
 
@@ -99,22 +135,29 @@ client.on('messageCreate', async (message) => {
     if (message.content === '!setup') {
         const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${config.CLIENT_ID}&redirect_uri=${encodeURIComponent(config.REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
         
+        const embed = new EmbedBuilder()
+            .setTitle('🛡️ Verificação Obrigatória')
+            .setDescription(`Seja bem-vindo(a) ao servidor! \n\nPara garantir a segurança de todos contra contas fakes e raids, e para liberar seu acesso aos **Canais**, **Sorteios** e **Eventos**, você precisa se verificar.\n\nClique no botão abaixo para autenticar sua conta de forma segura.`)
+            .setColor('Red')
+            .setFooter({ text: 'Sistema de Proteção Anti-Raid • Verificação Segura' })
+            .setImage('https://i.imgur.com/8Q6QgXq.gif'); // Opcional: Um gif de linha vermelha ou banner do server
+
         const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setLabel('🔓 Verificar').setStyle(ButtonStyle.Link).setURL(authUrl)
+            new ButtonBuilder()
+                .setLabel('🔓 Verificar Agora')
+                .setStyle(ButtonStyle.Link)
+                .setURL(authUrl)
         );
         
-        message.channel.send({ 
-            content: 'Clique abaixo para se verificar:', 
-            components: [row] 
-        });
+        message.channel.send({ embeds: [embed], components: [row] });
     }
 
     if (message.content.startsWith('!puxar')) {
         const targetGuildId = message.content.split(' ')[1];
         const targetGuild = client.guilds.cache.get(targetGuildId);
-        if (!targetGuild) return message.reply('Servidor nao encontrado.');
+        if (!targetGuild) return message.reply('Servidor não encontrado.');
 
-        message.reply('Iniciando...');
+        message.reply('Iniciando puxada...');
         
         const users = Object.keys(usersDB);
         for (const userId of users) {
