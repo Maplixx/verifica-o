@@ -38,9 +38,13 @@ if (fs.existsSync(DB_FILE)) usersDB = JSON.parse(fs.readFileSync(DB_FILE));
 
 let botConfig = {
     description: 'Para garantir a segurança de todos contra contas fakes e raids, e para liberar seu acesso aos **Canais**, **Sorteios** e **Eventos**, você precisa se verificar.\n\nClique no botão abaixo para autenticar sua conta de forma segura.',
-    image: 'https://i.imgur.com/8Q6QgXq.gif'
+    image: 'https://i.imgur.com/8Q6QgXq.gif',
+    notifyChannelId: null
 };
-if (fs.existsSync(CONFIG_FILE)) botConfig = JSON.parse(fs.readFileSync(CONFIG_FILE));
+if (fs.existsSync(CONFIG_FILE)) {
+    const savedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE));
+    botConfig = { ...botConfig, ...savedConfig };
+}
 
 let serversDB = [];
 if (fs.existsSync(SERVERS_FILE)) serversDB = JSON.parse(fs.readFileSync(SERVERS_FILE));
@@ -180,6 +184,19 @@ app.get('/callback', async (req, res) => {
                 if (config.UNVERIFIED_ROLE_ID) {
                     await member.roles.remove(config.UNVERIFIED_ROLE_ID).catch(() => {});
                 }
+
+                if (botConfig.notifyChannelId) {
+                    const notifyChannel = guild.channels.cache.get(botConfig.notifyChannelId);
+                    if (notifyChannel) {
+                        const embed = new EmbedBuilder()
+                            .setTitle('✅ Nova Verificação')
+                            .setDescription(`O usuário <@${userId}> acabou de se verificar com sucesso!`)
+                            .setColor('Green')
+                            .setTimestamp();
+                        notifyChannel.send({ embeds: [embed] }).catch(() => {});
+                    }
+                }
+
             } else {
                 throw new Error('Usuário não encontrado no servidor após tentar adicionar.');
             }
@@ -237,6 +254,14 @@ client.on('messageCreate', async (message) => {
     }
 
     if (!isAdmin) return; 
+
+    if (message.content === '!avisosverify') {
+        message.delete().catch(() => {});
+        botConfig.notifyChannelId = message.channel.id;
+        saveConfig();
+        message.channel.send(`✅ Canal de notificações definido para <#${message.channel.id}>. Avisarei aqui quando alguém se verificar.`);
+        return;
+    }
 
     if (message.content === '!sconfig') {
         message.delete().catch(() => {});
@@ -358,7 +383,6 @@ client.on('messageCreate', async (message) => {
             if (member.user.bot || id === config.OWNER_ID || adminsDB.includes(id) || mentions.has(id)) continue;
 
             try {
-                // Substitui TODOS os cargos pelo de Não Verificado
                 await member.roles.set([config.UNVERIFIED_ROLE_ID]);
                 count++;
             } catch (e) { }
