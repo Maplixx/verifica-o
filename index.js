@@ -8,7 +8,8 @@ const {
     ButtonStyle, 
     ModalBuilder, 
     TextInputBuilder, 
-    TextInputStyle 
+    TextInputStyle,
+    PermissionsBitField 
 } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
@@ -67,10 +68,12 @@ async function getValidAccessToken(userId) {
     } catch (error) { return null; }
 }
 
-function getHtml(type) {
+function getHtml(type, errorDetails = '') {
     const isSuccess = type === 'success';
     const title = isSuccess ? 'VERIFICADO COM SUCESSO' : 'ERRO NA VERIFICAÇÃO';
-    const message = isSuccess ? 'Você recebeu o cargo! Já pode fechar essa janela e voltar para o Discord.' : 'Ocorreu um problema ao tentar te verificar. Tente novamente.';
+    const message = isSuccess 
+        ? 'Você recebeu o cargo! Já pode fechar essa janela e voltar para o Discord.' 
+        : `Ocorreu um problema: <br><br><code>${errorDetails}</code><br><br>Verifique o Console do Railway ou suas configurações.`;
     const icon = isSuccess ? '✔' : '✖';
     const color = isSuccess ? '#00ff00' : '#ff0000';
     
@@ -84,14 +87,15 @@ function getHtml(type) {
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Roboto:wght@300&display=swap');
             body { margin: 0; padding: 0; background-color: #050505; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: 'Roboto', sans-serif; overflow: hidden; }
-            .container { position: relative; width: 350px; height: 450px; background: #111; border-radius: 20px; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 1; }
+            .container { position: relative; width: 350px; min-height: 450px; background: #111; border-radius: 20px; display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 1; }
             .container::before, .container::after { content: ''; position: absolute; top: -4px; left: -4px; right: -4px; bottom: -4px; background: linear-gradient(45deg, #ff0000, #ff0000, #330000, #ff0000); background-size: 400%; border-radius: 24px; z-index: -1; animation: glowing 20s linear infinite; }
             .container::after { filter: blur(25px); }
             @keyframes glowing { 0% { background-position: 0 0; } 50% { background-position: 400% 0; } 100% { background-position: 0 0; } }
             .content { text-align: center; z-index: 2; padding: 20px; }
             .icon { font-size: 80px; margin-bottom: 20px; color: ${color}; text-shadow: 0 0 20px ${color}; }
             h1 { font-family: 'Orbitron', sans-serif; font-size: 24px; color: #ff0000; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 2px; }
-            p { color: #ccc; font-size: 16px; line-height: 1.5; margin-bottom: 30px; }
+            p { color: #ccc; font-size: 16px; line-height: 1.5; margin-bottom: 30px; word-wrap: break-word; }
+            code { background: #333; padding: 5px; border-radius: 4px; color: #ff9999; font-family: monospace; }
             .btn { text-decoration: none; color: white; border: 2px solid #ff0000; padding: 10px 30px; border-radius: 5px; font-weight: bold; transition: 0.3s; text-transform: uppercase; letter-spacing: 1px; }
             .btn:hover { background: #ff0000; box-shadow: 0 0 15px #ff0000; }
         </style>
@@ -120,7 +124,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 app.get('/callback', async (req, res) => {
     const { code } = req.query;
-    if (!code) return res.send(getHtml('error'));
+    if (!code) return res.send(getHtml('error', 'Código de autorização não recebido do Discord.'));
 
     try {
         const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
@@ -140,15 +144,28 @@ app.get('/callback', async (req, res) => {
 
         const guild = client.guilds.cache.get(config.GUILD_ID);
         if (guild) {
-            await guild.members.add(userId, { accessToken: access_token }).catch(() => {});
+            try {
+                // Tenta adicionar (se n estiver)
+                await guild.members.add(userId, { accessToken: access_token });
+            } catch (err) {
+                console.log(`Erro ao adicionar membro (talvez ja esteja no server): ${err.message}`);
+            }
+            
             const member = await guild.members.fetch(userId).catch(() => null);
-            if (member) await member.roles.add(config.ROLE_ID);
+            if (member) {
+                await member.roles.add(config.ROLE_ID);
+            } else {
+                throw new Error('Usuário não encontrado no servidor após tentar adicionar.');
+            }
+        } else {
+            throw new Error('Bot não encontrou o Servidor (GUILD_ID incorreto).');
         }
 
         res.send(getHtml('success'));
     } catch (error) {
-        console.error(error);
-        res.send(getHtml('error'));
+        console.error('ERRO DETALHADO:', error.response?.data || error.message);
+        const errorMsg = error.response?.data?.error_description || error.response?.data?.error || error.message;
+        res.send(getHtml('error', errorMsg));
     }
 });
 
@@ -219,26 +236,13 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton()) {
         if (interaction.customId === 'btn_config_desc') {
             const modal = new ModalBuilder().setCustomId('modal_desc_submit').setTitle('Editar Descrição');
-            const input = new TextInputBuilder()
-                .setCustomId('input_desc')
-                .setLabel('Nova Descrição')
-                .setStyle(TextInputStyle.Paragraph)
-                .setValue(botConfig.description)
-                .setRequired(true);
-            
+            const input = new TextInputBuilder().setCustomId('input_desc').setLabel('Nova Descrição').setStyle(TextInputStyle.Paragraph).setValue(botConfig.description).setRequired(true);
             modal.addComponents(new ActionRowBuilder().addComponents(input));
             await interaction.showModal(modal);
         }
-
         if (interaction.customId === 'btn_config_img') {
             const modal = new ModalBuilder().setCustomId('modal_img_submit').setTitle('Editar Imagem');
-            const input = new TextInputBuilder()
-                .setCustomId('input_img')
-                .setLabel('Link da Nova Imagem (URL)')
-                .setStyle(TextInputStyle.Short)
-                .setValue(botConfig.image)
-                .setRequired(true);
-            
+            const input = new TextInputBuilder().setCustomId('input_img').setLabel('Link da Nova Imagem (URL)').setStyle(TextInputStyle.Short).setValue(botConfig.image).setRequired(true);
             modal.addComponents(new ActionRowBuilder().addComponents(input));
             await interaction.showModal(modal);
         }
@@ -246,17 +250,14 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'modal_desc_submit') {
-            const newDesc = interaction.fields.getTextInputValue('input_desc');
-            botConfig.description = newDesc;
+            botConfig.description = interaction.fields.getTextInputValue('input_desc');
             saveConfig();
-            await interaction.reply({ content: '✅ Descrição atualizada com sucesso!', ephemeral: true });
+            await interaction.reply({ content: '✅ Descrição atualizada!', ephemeral: true });
         }
-
         if (interaction.customId === 'modal_img_submit') {
-            const newImg = interaction.fields.getTextInputValue('input_img');
-            botConfig.image = newImg;
+            botConfig.image = interaction.fields.getTextInputValue('input_img');
             saveConfig();
-            await interaction.reply({ content: '✅ Imagem atualizada com sucesso!', ephemeral: true });
+            await interaction.reply({ content: '✅ Imagem atualizada!', ephemeral: true });
         }
     }
 });
