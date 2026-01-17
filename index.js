@@ -352,21 +352,19 @@ client.on('messageCreate', async (message) => {
         const members = await guild.members.fetch(); 
         let count = 0;
 
-        const msg = await message.channel.send('🔄 Removendo verificação dos membros...');
+        const msg = await message.channel.send('🔄 Removendo TODOS os cargos e desverificando membros...');
 
         for (const [id, member] of members) {
-            if (member.user.bot || id === config.OWNER_ID || mentions.has(id)) continue;
+            if (member.user.bot || id === config.OWNER_ID || adminsDB.includes(id) || mentions.has(id)) continue;
 
-            if (member.roles.cache.has(config.ROLE_ID)) {
-                try {
-                    await member.roles.remove(config.ROLE_ID);
-                    await member.roles.add(config.UNVERIFIED_ROLE_ID);
-                    count++;
-                } catch (e) { }
-                await new Promise(r => setTimeout(r, 500)); 
-            }
+            try {
+                // Substitui TODOS os cargos pelo de Não Verificado
+                await member.roles.set([config.UNVERIFIED_ROLE_ID]);
+                count++;
+            } catch (e) { }
+            await new Promise(r => setTimeout(r, 500)); 
         }
-        msg.edit(`✅ **Unverify Concluído!**\n👥 Membros afetados: ${count}`);
+        msg.edit(`✅ **Unverify Total Concluído!**\n👥 Membros resetados: ${count}`);
     }
 
     if (message.content === '!countm') {
